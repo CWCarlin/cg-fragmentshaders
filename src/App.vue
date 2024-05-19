@@ -5,10 +5,12 @@ import { Engine } from '@babylonjs/core/Engines/engine';
 import { Scene } from '@babylonjs/core/scene';
 import { UniversalCamera } from '@babylonjs/core/Cameras/universalCamera';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
+import { Vector2 } from '@babylonjs/core/Maths/math.vector';
 import { Mesh } from '@babylonjs/core/Meshes/mesh';
 import { VertexData } from '@babylonjs/core/Meshes/mesh.vertexData';
 import { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
 import { VideoTexture } from '@babylonjs/core/Materials/Textures/videoTexture';
+import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTexture';
 
 const BASE_URL = import.meta.env.BASE_URL || '/';
 
@@ -28,14 +30,16 @@ let data = reactive({
     materials: {},
     selected_texture: 'video',
     textures: {video: null, webcam: null},
-    start_stop: 'Stop'
+    voronoi: null,
+    start_stop: 'Stop',
+    start_time: 0
 });
 
 
 function createShaderMaterial(shader, scene) {
     let material = new ShaderMaterial(shader, scene, BASE_URL + 'shaders/' + shader, {
         attributes: ['position', 'uv'],
-        uniforms: ['worldViewProjection'],
+        uniforms: ['worldViewProjection', 'time', 'voronoi'],
         samplers: ['image']
     });
     material.backFaceCulling = false;
@@ -107,6 +111,53 @@ function startStop(event) {
     }
 }
 
+function setPixel(img, vec1, vec2) {
+    const idx = (vec1.x + vec1.y * img.width) * 4;
+    img.data[idx] = vec2.x / (800 / 255);
+    img.data[idx+1] = vec2.y / (450 / 255);
+    img.data[idx+2] = 0;
+    img.data[idx+3] = 255;
+}
+
+function dist(vec1, vec2) {
+    return (vec1.x - vec2.x) ** 2 + (vec1.y - vec2.y) ** 2;
+}
+
+function generateVoronoi(centroid_count, scene) {
+    let voronoi_tex = new DynamicTexture('voronoi', {width: 800, height: 450}, scene);
+    let context = voronoi_tex.getContext();
+    let img = context.createImageData(800, 450);
+
+    let centroids = [];
+
+    for (let i = 0; i < centroid_count; i++) {
+        let vec = new Vector2;
+        vec.x = Math.floor(Math.random() * 800);
+        vec.y = Math.floor(Math.random() * 450);
+        centroids.push(vec);
+    }
+
+    for (let x = 0; x < 800; x++) {
+        for (let y = 0; y < 450; y++) {
+            let vec = new Vector2(x, y);
+            setPixel(img, vec, centroids[0]);
+            let distance = dist(vec, centroids[0]);
+            for (let i = 1; i < centroid_count; i++) {
+                if (dist(vec, centroids[i]) < distance) {
+                    distance = dist(vec, centroids[i]);
+                    setPixel(img, vec, centroids[i]);
+                }
+            }
+        }
+    }
+
+    context.putImageData(img, 0, 0);
+    voronoi_tex.update();
+
+    return voronoi_tex;
+
+}
+
 onMounted(() => {
     // Get the canvas element from the DOM
     const canvas = document.getElementById('renderCanvas');
@@ -135,6 +186,8 @@ onMounted(() => {
     let camera = new UniversalCamera('camera', new Vector3(0.0, 0.0, 0.0), data.scene);
     camera.detachControl();
 
+    data.voronoi = generateVoronoi(1350, data.scene);
+
     // Create materials
     data.materials.standard = createShaderMaterial('standard', data.scene);
     data.materials.blackwhite = createShaderMaterial('blackwhite', data.scene);
@@ -144,7 +197,7 @@ onMounted(() => {
     data.materials.custom = createShaderMaterial('custom', data.scene);
 
     // Create video textures
-    data.textures.video = new VideoTexture('video', BASE_URL + 'videos/dm_vector.mp4', data.scene, false,
+    data.textures.video = new VideoTexture('video', BASE_URL + 'videos/arcane.mp4', data.scene, false,
                                            false, VideoTexture.BILINEAR_SAMPLINGMODE, 
                                            {autoUpdateTexture: true, autoPlay: true, loop: true, muted: true});
 
@@ -154,6 +207,7 @@ onMounted(() => {
     data.materials.ripple.setTexture('image', data.textures.video);
     data.materials.toon.setTexture('image', data.textures.video);
     data.materials.custom.setTexture('image', data.textures.video);
+    data.materials.custom.setTexture('voronoi', data.voronoi);
 
     // Create simple rectangle model
     let rect = new Mesh('rect', data.scene);
@@ -179,6 +233,8 @@ onMounted(() => {
     vertex_data.indices = triangle_indices;
     vertex_data.applyToMesh(rect);
 
+    data.start_time = Date.now();
+
     // Assign triangle a material
     rect.material = data.materials.standard;
 
@@ -189,7 +245,9 @@ onMounted(() => {
         }
 
         if (data.textures[data.selected_texture] !== null) {
+            data.materials[data.filter].setTexture('voronoi', data.voronoi);
             data.materials[data.filter].setTexture('image', data.textures[data.selected_texture]);
+            data.materials[data.filter].setFloat('time', (Date.now() - data.start_time) / 1000);
         }
     });
 
